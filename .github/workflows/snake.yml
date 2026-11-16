@@ -13,15 +13,19 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+
     steps:
-      - name: generate snake svg
-        uses: Platane/snk/svg-only@v3
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup python
+        uses: actions/setup-python@v5
         with:
-          github_user_name: ${{ github.repository_owner }}
-          outputs: |
-            dist/github-contribution-grid-snake.svg
-            dist/github-contribution-grid-snake-dark.svg?palette=github-dark
+          python-version: "3.11"
+
+      - name: generate snake svg
+        run: python .github/scripts/generate_snake.py
 
       - name: push svg to output branch
         uses: crazy-max/ghaction-github-pages@v4
