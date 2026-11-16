@@ -5,12 +5,12 @@
 - 博客：[icci.ink](https://icci.ink)
 - 主页仓库：[kingdomzhen.github.io](https://github.com/Kingdomzhen/kingdomzhen.github.io)
 
-## 贡献热力图 · 贪吃蛇版
+## 贡献热力图 · 会变长的贪吃蛇
 
-每天自动重新生成一次，蛇会沿着最近一年的提交格子一路吃起来。
+蛇沿着贡献格子前进，每吃掉一个格子就会增长一节；动画每天自动更新。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/output/github-contribution-grid-snake-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/output/github-contribution-grid-snake.svg">
-  <img alt="github contribution grid snake animation" src="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/output/github-contribution-grid-snake.svg">
+  <img alt="贪吃蛇每吃掉一个贡献格子就会变长" src="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/output/github-contribution-grid-snake.svg">
 </picture>
