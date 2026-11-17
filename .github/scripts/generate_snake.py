@@ -21,8 +21,15 @@ LEFT = 24
 TOP = 42
 WIDTH = LEFT * 2 + WEEKS * STEP - GAP
 HEIGHT = TOP + DAYS_PER_WEEK * STEP - GAP + 24
-DURATION = "28s"
 FRAMES = WEEKS * DAYS_PER_WEEK
+# One frame is one cell of travel. The old build spread FRAMES over a fixed 28 s
+# loop, so keeping that per-step pace means the loop simply gets shorter when the
+# snake finishes early, instead of gliding around an already-empty calendar.
+FRAME_SECONDS = 28 / FRAMES
+# Hold on the cleared board for a beat before the loop starts over.
+HOLD_FRAMES = 6# The run ends on the frame that clears the last pellet, then holds briefly so
+# the finished board is readable before the loop starts over.
+HOLD_FRAMES = 6
 # A hand-played snake mostly heads for the next pellet but takes wrong turns
 # now and then, and keeps gliding straight rather than twitching every cell.
 FOOD_BIAS = 0.72
@@ -218,12 +225,15 @@ def snake_walk(grid, rng, frames=FRAMES):
     """Wander the calendar the way a player chases pellets.
 
     While pellets are left the snake heads for one of the three nearest, so it
-    still clears the board without ever repeating the same tidy sweep. Once the
-    board is empty it picks random spots across the whole calendar and keeps
-    gliding instead of stopping. Every step is one neighbouring cell, so the
-    rendered body always stays connected. Returns the frame-by-frame route and
-    the frame at which each pellet was first eaten; later passes over a cleared
-    cell are just travel, not a second meal.
+    still clears the board without ever repeating the same tidy sweep. The walk
+    ends on the step that clears the last pellet - there is nothing left to play
+    for, and gliding around an empty calendar only pads the loop. ``frames`` is
+    just the upper bound: a densely covered year cannot be swept within it, so
+    the snake stops there mid-meal rather than growing the SVG without limit.
+    Every step is one neighbouring cell, so the rendered body always stays
+    connected. Returns the frame-by-frame route and the frame at which each
+    pellet was first eaten; later passes over a cleared cell are just travel,
+    not a second meal.
     """
     pellets = {cell for cell in grid if grid[cell][0] > 0}
     position = (0, 0)
@@ -235,37 +245,33 @@ def snake_walk(grid, rng, frames=FRAMES):
 
     previous = None
     goal = None
-    while len(route) < frames:
+    while pellets and len(route) < frames:
         direction = (1, 0) if previous is None else (
             position[0] - previous[0],
             position[1] - previous[1],
         )
-        rush = False
-        if pellets:
-            # A player locks onto one pellet and only occasionally changes their
-            # mind. Re-picking a target every single step made the head dither
-            # between two equidistant pellets and burn half the run, so the
-            # choice is sticky: one of the three nearest, kept until it is eaten
-            # or the attention wanders. Ties break by coordinates, not by set
-            # iteration order, so the route stays identical everywhere.
-            if goal not in pellets or rng.random() < TARGET_SWITCH:
-                nearest = sorted(
-                    pellets,
-                    key=lambda cell: (
-                        abs(cell[0] - position[0]) + abs(cell[1] - position[1]),
-                        cell,
-                    ),
-                )[:3]
-                goal = rng.choice(nearest)
-            # If the run is about to end with pellets still on the board, and a
-            # straight tour could still sweep them up, stop wandering and go.
-            # With a densely covered calendar a tour cannot fit anyway, so the
-            # snake keeps roaming instead of turning into a beeline robot.
-            tour = nearest_tour_cost(position, pellets)
-            budget = frames - len(route)
-            rush = budget < tour + 8 and tour <= budget
-        elif goal is None or goal == position:
-            goal = (rng.randrange(WEEKS), rng.randrange(DAYS_PER_WEEK))
+        # A player locks onto one pellet and only occasionally changes their
+        # mind. Re-picking a target every single step made the head dither
+        # between two equidistant pellets and burn half the run, so the choice
+        # is sticky: one of the three nearest, kept until it is eaten or the
+        # attention wanders. Ties break by coordinates, not by set iteration
+        # order, so the route stays identical on every machine.
+        if goal not in pellets or rng.random() < TARGET_SWITCH:
+            nearest = sorted(
+                pellets,
+                key=lambda cell: (
+                    abs(cell[0] - position[0]) + abs(cell[1] - position[1]),
+                    cell,
+                ),
+            )[:3]
+            goal = rng.choice(nearest)
+        # If the cap is about to hit with pellets still on the board, and a
+        # straight tour could still sweep them up, stop wandering and go. With a
+        # densely covered calendar a tour cannot fit anyway, so the snake keeps
+        # roaming instead of turning into a beeline robot.
+        tour = nearest_tour_cost(position, pellets)
+        budget = frames - len(route)
+        rush = budget < tour + 8 and tour <= budget
         previous, position = position, choose_step(
             position, previous, goal, direction, rng, rush=rush
         )
@@ -280,6 +286,14 @@ def build_scene(grid):
     """Route plus per-frame length, shared by the light and dark renderings."""
     rng = random.Random(contribution_seed(grid))
     route, eaten_at = snake_walk(grid, rng)
+    if eaten_at:
+        # Cut the moment the board is cleared: frames after that are the snake
+        # retracing an empty calendar, which is what the loop must not show.
+        route = route[: max(eaten_at.values()) + 1]
+    # Hold on the finished board for a beat so the loop does not snap back
+    # instantly. The head and body keep their last positions, so it reads as a
+    # pause, not as extra travel.
+    route = route + [route[-1]] * HOLD_FRAMES
     lengths = []
     length = 1
     for frame, cell in enumerate(route):
@@ -301,6 +315,9 @@ def make_svg(grid, dark=False, scene=None):
     route, eaten_at, lengths, max_length = scene or build_scene(grid)
 
     frame_count = len(route)
+    # Loop length follows the run itself, one cell per frame, so the snake keeps
+    # the same speed and the loop restarts right after the board is cleared.
+    duration = f"{frame_count * FRAME_SECONDS:.2f}s"
     # Discrete animations without keyTimes give every value an equal slice of the
     # duration, which is exactly one calendar cell per frame. Spelling out 371
     # keyTimes for each of the four animations only bloats the SVG - it grows by
@@ -334,7 +351,7 @@ def make_svg(grid, dark=False, scene=None):
                 f'<rect x="{px}" y="{py}" width="{CELL}" height="{CELL}" '
                 f'rx="2" fill="{levels[level]}">'
                 f'<animate attributeName="fill" values="{";".join(fills)}" '
-                f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
+                f'calcMode="discrete" dur="{duration}" repeatCount="indefinite"/>'
                 "</rect>"
             )
 
@@ -360,11 +377,11 @@ def make_svg(grid, dark=False, scene=None):
             f'<rect x="{xs[0]}" y="{ys[0]}" width="{CELL}" height="{CELL}" rx="3" '
             f'fill="{color}" stroke="{background}" stroke-width="1">'
             f'<animate attributeName="x" values="{";".join(xs)}" '
-            f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
+            f'calcMode="discrete" dur="{duration}" repeatCount="indefinite"/>'
             f'<animate attributeName="y" values="{";".join(ys)}" '
-            f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
+            f'calcMode="discrete" dur="{duration}" repeatCount="indefinite"/>'
             f'<animate attributeName="opacity" values="{";".join(opacity)}" '
-            f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
+            f'calcMode="discrete" dur="{duration}" repeatCount="indefinite"/>'
             "</rect>"
         )
 
