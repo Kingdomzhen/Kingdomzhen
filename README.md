@@ -7,10 +7,10 @@
 
 ## 贡献热力图 · 会变长的贪吃蛇
 
-动画按 GitHub 贡献日历的星期日到星期六顺序逐格移动；每吃到一个有贡献记录的格子，蛇就增长一节。每天自动更新。
+动画沿贡献日历逐行横扫，左右往复；每吃到一个有贡献记录的格子，蛇就增长一节，被吃掉的格子随即清空。每天自动更新。
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/output/github-contribution-grid-snake-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/output/github-contribution-grid-snake.svg">
-  <img alt="按 GitHub 贡献日历移动并逐渐变长的贪吃蛇" src="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/output/github-contribution-grid-snake.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/main/snake/github-contribution-grid-snake-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/main/snake/github-contribution-grid-snake.svg">
+  <img alt="按 GitHub 贡献日历移动并逐渐变长的贪吃蛇" src="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/main/snake/github-contribution-grid-snake.svg">
 </picture>

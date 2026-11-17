@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 USERNAME = "Kingdomzhen"
-OUTPUT_DIR = Path("dist")
+OUTPUT_DIR = Path("snake")
 WEEKS = 53
 DAYS_PER_WEEK = 7
 CELL = 11
@@ -149,11 +149,15 @@ def make_svg(grid, dark=False):
         else ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"]
     )
 
-    # A continuous serpentine route visits every calendar square exactly once.
+    # The snake slithers horizontally: left to right along one weekday row, then
+    # down one cell at the right edge and back across the next row. On GitHub's
+    # 53-column × 7-row calendar this reads as a real snake gliding over the grid,
+    # instead of the old vertical up/down sweeping that looked like a saw blade.
+    # Every cell is still visited exactly once and each step stays adjacent.
     route = []
-    for x in range(WEEKS):
-        rows = range(DAYS_PER_WEEK) if x % 2 == 0 else range(DAYS_PER_WEEK - 1, -1, -1)
-        route.extend((x, y) for y in rows)
+    for y in range(DAYS_PER_WEEK):
+        columns = range(WEEKS) if y % 2 == 0 else range(WEEKS - 1, -1, -1)
+        route.extend((x, y) for x in columns)
 
     # The snake moves one adjacent cell per frame. Only non-zero contribution
     # cells count as food; each one increases its length by one segment.
@@ -168,6 +172,9 @@ def make_svg(grid, dark=False):
 
     frame_count = len(route)
     key_times = ";".join(f"{i / (frame_count - 1):.8f}" for i in range(frame_count))
+    # Frame at which each non-empty cell is eaten; it empties as the head lands
+    # on it, so the grid visibly clears behind the snake.
+    eaten_at = {cell: frame for frame, cell in enumerate(route) if grid[cell][0] > 0}
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
         f'<rect width="100%" height="100%" fill="{background}"/>',
@@ -175,14 +182,30 @@ def make_svg(grid, dark=False):
     ]
 
     # Draw all 371 cells from the real contribution data, including empty cells.
+    cleared_color = levels[0]
     for x in range(WEEKS):
         for y in range(DAYS_PER_WEEK):
-            _, level = grid[(x, y)]
+            level = grid[(x, y)][1]
             px = LEFT + x * STEP
             py = TOP + y * STEP
+            eat_frame = eaten_at.get((x, y))
+            if eat_frame is None:
+                svg.append(
+                    f'<rect x="{px}" y="{py}" width="{CELL}" height="{CELL}" '
+                    f'rx="2" fill="{levels[level]}"/>'
+                )
+                continue
+            # Discrete fill animation: the cell keeps its colour until the head
+            # reaches it, then stays empty for the rest of the run. Both lists are
+            # one entry per frame so keyTimes stays the same as the snake's own.
+            fills = [levels[level]] * eat_frame + [cleared_color] * (frame_count - eat_frame)
             svg.append(
                 f'<rect x="{px}" y="{py}" width="{CELL}" height="{CELL}" '
-                f'rx="2" fill="{levels[level]}"/>'
+                f'rx="2" fill="{levels[level]}">'
+                f'<animate attributeName="fill" values="{";".join(fills)}" '
+                f'keyTimes="{key_times}" calcMode="discrete" '
+                f'dur="{DURATION}" repeatCount="indefinite"/>'
+                "</rect>"
             )
 
     # Each body element follows the head's historical trail. It appears only
