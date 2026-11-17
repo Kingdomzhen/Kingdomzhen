@@ -27,6 +27,13 @@ FRAMES = WEEKS * DAYS_PER_WEEK
 # now and then, and keeps gliding straight rather than twitching every cell.
 FOOD_BIAS = 0.72
 STRAIGHT_BIAS = 0.55
+# Chance per step that the snake loses interest in its current pellet and picks
+# another of the nearest three.
+TARGET_SWITCH = 0.12
+# When heading for a pellet, how often it keeps the current heading instead of
+# turning. A player holds an arrow key and runs a few cells before turning; a
+# 50/50 tie-break here produced a twitchy, nervous-looking wiggle.
+CONTINUE_BIAS = 0.7
 NEIGHBOUR_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
@@ -158,7 +165,23 @@ def contribution_seed(grid):
     return int(hashlib.sha256(payload.encode("ascii")).hexdigest()[:16], 16)
 
 
-def choose_step(position, previous, target, direction, rng):
+def nearest_tour_cost(position, pellets):
+    """Steps a greedy nearest-pellet tour would need from ``position``."""
+    cost = 0
+    current = position
+    remaining = sorted(pellets)
+    while remaining:
+        best = min(
+            remaining,
+            key=lambda cell: (abs(cell[0] - current[0]) + abs(cell[1] - current[1]), cell),
+        )
+        cost += abs(best[0] - current[0]) + abs(best[1] - current[1])
+        remaining.remove(best)
+        current = best
+    return cost
+
+
+def choose_step(position, previous, target, direction, rng, rush=False):
     """Pick the next cell the way a person with the arrow keys would."""
     options = [
         (position[0] + dx, position[1] + dy)
@@ -171,12 +194,22 @@ def choose_step(position, previous, target, direction, rng):
         forward = [cell for cell in options if cell != previous]
     if not forward:
         return previous  # cornered into its own tail: the only way off is back
-    if target is not None and rng.random() < FOOD_BIAS:
+    if target is not None and (rush or rng.random() < FOOD_BIAS):
         distances = [abs(cell[0] - target[0]) + abs(cell[1] - target[1]) for cell in forward]
         closest = min(distances)
-        return rng.choice([cell for cell, d in zip(forward, distances) if d == closest])
+        if rush:
+            # Straight at the pellet, no wobble: this branch only runs when the
+            # clock is about to run out with pellets still on the board.
+            return min(
+                (cell for cell, d in zip(forward, distances) if d == closest),
+                key=lambda cell: cell,
+            )
+        closest_cells = [cell for cell, d in zip(forward, distances) if d == closest]
+        if direction in closest_cells and rng.random() < CONTINUE_BIAS:
+            return direction
+        return rng.choice(closest_cells)
     straight = (position[0] + direction[0], position[1] + direction[1])
-    if straight in forward and rng.random() < STRAIGHT_BIAS:
+    if not rush and straight in forward and rng.random() < STRAIGHT_BIAS:
         return straight
     return rng.choice(forward)
 
@@ -207,17 +240,35 @@ def snake_walk(grid, rng, frames=FRAMES):
             position[0] - previous[0],
             position[1] - previous[1],
         )
+        rush = False
         if pellets:
-            # A player rarely beelines for the single closest pellet; going for
-            # one of the nearest few is what breaks up the pattern.
-            nearest = sorted(
-                pellets,
-                key=lambda cell: abs(cell[0] - position[0]) + abs(cell[1] - position[1]),
-            )[:3]
-            goal = rng.choice(nearest)
+            # A player locks onto one pellet and only occasionally changes their
+            # mind. Re-picking a target every single step made the head dither
+            # between two equidistant pellets and burn half the run, so the
+            # choice is sticky: one of the three nearest, kept until it is eaten
+            # or the attention wanders. Ties break by coordinates, not by set
+            # iteration order, so the route stays identical everywhere.
+            if goal not in pellets or rng.random() < TARGET_SWITCH:
+                nearest = sorted(
+                    pellets,
+                    key=lambda cell: (
+                        abs(cell[0] - position[0]) + abs(cell[1] - position[1]),
+                        cell,
+                    ),
+                )[:3]
+                goal = rng.choice(nearest)
+            # If the run is about to end with pellets still on the board, and a
+            # straight tour could still sweep them up, stop wandering and go.
+            # With a densely covered calendar a tour cannot fit anyway, so the
+            # snake keeps roaming instead of turning into a beeline robot.
+            tour = nearest_tour_cost(position, pellets)
+            budget = frames - len(route)
+            rush = budget < tour + 8 and tour <= budget
         elif goal is None or goal == position:
             goal = (rng.randrange(WEEKS), rng.randrange(DAYS_PER_WEEK))
-        previous, position = position, choose_step(position, previous, goal, direction, rng)
+        previous, position = position, choose_step(
+            position, previous, goal, direction, rng, rush=rush
+        )
         route.append(position)
         if position in pellets:
             eaten_at[position] = len(route) - 1
@@ -250,7 +301,11 @@ def make_svg(grid, dark=False, scene=None):
     route, eaten_at, lengths, max_length = scene or build_scene(grid)
 
     frame_count = len(route)
-    key_times = ";".join(f"{i / (frame_count - 1):.8f}" for i in range(frame_count))
+    # Discrete animations without keyTimes give every value an equal slice of the
+    # duration, which is exactly one calendar cell per frame. Spelling out 371
+    # keyTimes for each of the four animations only bloats the SVG - it grows by
+    # roughly 11 KB per snake segment, and the file is re-served on every profile
+    # view, so keeping it lean matters as the year accumulates more pellets.
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
         f'<rect width="100%" height="100%" fill="{background}"/>',
@@ -272,15 +327,14 @@ def make_svg(grid, dark=False, scene=None):
                 )
                 continue
             # Discrete fill animation: the cell keeps its colour until the head
-            # reaches it, then stays empty for the rest of the run. Both lists are
-            # one entry per frame so keyTimes stays the same as the snake's own.
+            # reaches it, then stays empty for the rest of the run. One value per
+            # frame keeps it in lock-step with the snake's own animation.
             fills = [levels[level]] * eat_frame + [cleared_color] * (frame_count - eat_frame)
             svg.append(
                 f'<rect x="{px}" y="{py}" width="{CELL}" height="{CELL}" '
                 f'rx="2" fill="{levels[level]}">'
                 f'<animate attributeName="fill" values="{";".join(fills)}" '
-                f'keyTimes="{key_times}" calcMode="discrete" '
-                f'dur="{DURATION}" repeatCount="indefinite"/>'
+                f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
                 "</rect>"
             )
 
@@ -301,13 +355,15 @@ def make_svg(grid, dark=False, scene=None):
 
         color = head_color if segment == 0 else body_color
         svg.append(
-            f'<rect width="{CELL}" height="{CELL}" rx="3" fill="{color}" '
-            f'stroke="{background}" stroke-width="1">'
-            f'<animate attributeName="x" values="{";".join(xs)}" keyTimes="{key_times}" '
+            # x/y are seeded with frame 0 so a renderer that drops the animation
+            # still shows the snake where it starts instead of stacked at the origin.
+            f'<rect x="{xs[0]}" y="{ys[0]}" width="{CELL}" height="{CELL}" rx="3" '
+            f'fill="{color}" stroke="{background}" stroke-width="1">'
+            f'<animate attributeName="x" values="{";".join(xs)}" '
             f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
-            f'<animate attributeName="y" values="{";".join(ys)}" keyTimes="{key_times}" '
+            f'<animate attributeName="y" values="{";".join(ys)}" '
             f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
-            f'<animate attributeName="opacity" values="{";".join(opacity)}" keyTimes="{key_times}" '
+            f'<animate attributeName="opacity" values="{";".join(opacity)}" '
             f'calcMode="discrete" dur="{DURATION}" repeatCount="indefinite"/>'
             "</rect>"
         )
