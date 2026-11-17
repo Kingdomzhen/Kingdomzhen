@@ -7,7 +7,7 @@
 
 ## 贡献热力图 · 会变长的贪吃蛇
 
-动画沿贡献日历逐行横扫，左右往复；每吃到一个有贡献记录的格子，蛇就增长一节，被吃掉的格子随即清空。每天自动更新。
+动画像真的在玩：朝最近的贡献格子游过去，偶尔拐错方向，吃完之后继续乱逛；每吃到一个有贡献记录的格子，蛇就增长一节，被吃掉的格子随即清空。每次生成都同一条路线，每天自动更新。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Kingdomzhen/Kingdomzhen/main/snake/github-contribution-grid-snake-dark.svg">

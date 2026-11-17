@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Generate GitHub contribution-calendar SVGs with a continuous growing snake."""
 
+import hashlib
+import random
 import re
 from datetime import date, timedelta
 from html import escape
@@ -20,6 +22,12 @@ TOP = 42
 WIDTH = LEFT * 2 + WEEKS * STEP - GAP
 HEIGHT = TOP + DAYS_PER_WEEK * STEP - GAP + 24
 DURATION = "28s"
+FRAMES = WEEKS * DAYS_PER_WEEK
+# A hand-played snake mostly heads for the next pellet but takes wrong turns
+# now and then, and keeps gliding straight rather than twitching every cell.
+FOOD_BIAS = 0.72
+STRAIGHT_BIAS = 0.55
+NEIGHBOUR_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
 NO_CONTRIBUTION_RE = re.compile(r"no contributions?", re.IGNORECASE)
@@ -140,7 +148,97 @@ def calendar_grid(contributions):
     return grid
 
 
-def make_svg(grid, dark=False):
+def contribution_seed(grid):
+    """Deterministic seed so the same contribution data always animates the same."""
+    payload = ";".join(
+        f"{x},{y},{grid[(x, y)][0]}"
+        for x in range(WEEKS)
+        for y in range(DAYS_PER_WEEK)
+    )
+    return int(hashlib.sha256(payload.encode("ascii")).hexdigest()[:16], 16)
+
+
+def choose_step(position, previous, target, direction, rng):
+    """Pick the next cell the way a person with the arrow keys would."""
+    options = [
+        (position[0] + dx, position[1] + dy)
+        for dx, dy in NEIGHBOUR_STEPS
+        if 0 <= position[0] + dx < WEEKS and 0 <= position[1] + dy < DAYS_PER_WEEK
+    ]
+    if previous is None:
+        forward = options
+    else:
+        forward = [cell for cell in options if cell != previous]
+    if not forward:
+        return previous  # cornered into its own tail: the only way off is back
+    if target is not None and rng.random() < FOOD_BIAS:
+        distances = [abs(cell[0] - target[0]) + abs(cell[1] - target[1]) for cell in forward]
+        closest = min(distances)
+        return rng.choice([cell for cell, d in zip(forward, distances) if d == closest])
+    straight = (position[0] + direction[0], position[1] + direction[1])
+    if straight in forward and rng.random() < STRAIGHT_BIAS:
+        return straight
+    return rng.choice(forward)
+
+
+def snake_walk(grid, rng, frames=FRAMES):
+    """Wander the calendar the way a player chases pellets.
+
+    While pellets are left the snake heads for one of the three nearest, so it
+    still clears the board without ever repeating the same tidy sweep. Once the
+    board is empty it picks random spots across the whole calendar and keeps
+    gliding instead of stopping. Every step is one neighbouring cell, so the
+    rendered body always stays connected. Returns the frame-by-frame route and
+    the frame at which each pellet was first eaten; later passes over a cleared
+    cell are just travel, not a second meal.
+    """
+    pellets = {cell for cell in grid if grid[cell][0] > 0}
+    position = (0, 0)
+    route = [position]
+    eaten_at = {}
+    if position in pellets:
+        eaten_at[position] = 0
+        pellets.discard(position)
+
+    previous = None
+    goal = None
+    while len(route) < frames:
+        direction = (1, 0) if previous is None else (
+            position[0] - previous[0],
+            position[1] - previous[1],
+        )
+        if pellets:
+            # A player rarely beelines for the single closest pellet; going for
+            # one of the nearest few is what breaks up the pattern.
+            nearest = sorted(
+                pellets,
+                key=lambda cell: abs(cell[0] - position[0]) + abs(cell[1] - position[1]),
+            )[:3]
+            goal = rng.choice(nearest)
+        elif goal is None or goal == position:
+            goal = (rng.randrange(WEEKS), rng.randrange(DAYS_PER_WEEK))
+        previous, position = position, choose_step(position, previous, goal, direction, rng)
+        route.append(position)
+        if position in pellets:
+            eaten_at[position] = len(route) - 1
+            pellets.discard(position)
+    return route, eaten_at
+
+
+def build_scene(grid):
+    """Route plus per-frame length, shared by the light and dark renderings."""
+    rng = random.Random(contribution_seed(grid))
+    route, eaten_at = snake_walk(grid, rng)
+    lengths = []
+    length = 1
+    for frame, cell in enumerate(route):
+        if eaten_at.get(cell) == frame:
+            length += 1
+        lengths.append(length)
+    return route, eaten_at, lengths, max(lengths)
+
+
+def make_svg(grid, dark=False, scene=None):
     background = "#0d1117" if dark else "#ffffff"
     text_color = "#c9d1d9" if dark else "#57606a"
     levels = (
@@ -149,32 +247,10 @@ def make_svg(grid, dark=False):
         else ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"]
     )
 
-    # The snake slithers horizontally: left to right along one weekday row, then
-    # down one cell at the right edge and back across the next row. On GitHub's
-    # 53-column × 7-row calendar this reads as a real snake gliding over the grid,
-    # instead of the old vertical up/down sweeping that looked like a saw blade.
-    # Every cell is still visited exactly once and each step stays adjacent.
-    route = []
-    for y in range(DAYS_PER_WEEK):
-        columns = range(WEEKS) if y % 2 == 0 else range(WEEKS - 1, -1, -1)
-        route.extend((x, y) for x in columns)
-
-    # The snake moves one adjacent cell per frame. Only non-zero contribution
-    # cells count as food; each one increases its length by one segment.
-    food = [grid[cell][0] > 0 for cell in route]
-    lengths = []
-    length = 1
-    for has_food in food:
-        if has_food:
-            length += 1
-        lengths.append(length)
-    max_length = max(lengths)
+    route, eaten_at, lengths, max_length = scene or build_scene(grid)
 
     frame_count = len(route)
     key_times = ";".join(f"{i / (frame_count - 1):.8f}" for i in range(frame_count))
-    # Frame at which each non-empty cell is eaten; it empties as the head lands
-    # on it, so the grid visibly clears behind the snake.
-    eaten_at = {cell: frame for frame, cell in enumerate(route) if grid[cell][0] > 0}
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
         f'<rect width="100%" height="100%" fill="{background}"/>',
@@ -243,18 +319,25 @@ def make_svg(grid, dark=False):
 def main():
     contributions = fetch_contributions()
     grid = calendar_grid(contributions)
-    active_days = sum(1 for cell, (count, _) in contributions.items() if count > 0)
-    total = sum(count for count, _ in contributions.values())
-    # The snake starts with one segment and gains one per day with contributions.
-    print(f"{active_days} active days, {total} contributions, snake length {active_days + 1}")
-    if active_days == 0:
+    pellets = sum(1 for cell in grid if grid[cell][0] > 0)
+    total = sum(grid[cell][0] for cell in grid)
+    scene = build_scene(grid)
+    _, eaten_at, _, max_length = scene
+    # The snake starts with one segment and gains one per pellet it reaches.
+    print(
+        f"{pellets} pellets, {total} contributions, "
+        f"{len(eaten_at)} eaten, snake length {max_length}"
+    )
+    if pellets == 0:
         print("warning: no contribution counts found, the snake cannot grow")
+    elif len(eaten_at) < pellets:
+        print(f"warning: {pellets - len(eaten_at)} pellets were never reached")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "github-contribution-grid-snake.svg").write_text(
-        make_svg(grid), encoding="utf-8"
+        make_svg(grid, scene=scene), encoding="utf-8"
     )
     (OUTPUT_DIR / "github-contribution-grid-snake-dark.svg").write_text(
-        make_svg(grid, dark=True), encoding="utf-8"
+        make_svg(grid, dark=True, scene=scene), encoding="utf-8"
     )
 
 
