@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate GitHub contribution-calendar SVGs with a continuous growing snake."""
 
+import re
 from datetime import date, timedelta
 from html import escape
 from html.parser import HTMLParser
@@ -21,27 +22,90 @@ HEIGHT = TOP + DAYS_PER_WEEK * STEP - GAP + 24
 DURATION = "28s"
 
 
+NO_CONTRIBUTION_RE = re.compile(r"no contributions?", re.IGNORECASE)
+CONTRIBUTION_COUNT_RE = re.compile(r"(\d[\d,]*)\s+contributions?", re.IGNORECASE)
+
+
+def to_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_tooltip_count(text):
+    """Turn "12 contributions on ..." / "No contributions on ..." into a number."""
+    text = " ".join(text.split())
+    if not text:
+        return None
+    if NO_CONTRIBUTION_RE.search(text):
+        return 0
+    match = CONTRIBUTION_COUNT_RE.search(text)
+    if not match:
+        return None
+    return int(match.group(1).replace(",", ""))
+
+
 class ContributionParser(HTMLParser):
-    """Read contribution-cell attributes without relying on HTML attribute order."""
+    """Read contribution cells and their per-day counts.
+
+    GitHub no longer puts ``data-count`` on the calendar cell; the cell only
+    carries ``data-level``, while the exact number lives in a sibling
+    ``<tool-tip for="<cell id>">2 contributions on November 8th.</tool-tip>``.
+    Older pages still expose ``data-count``, so both shapes are accepted and
+    ``data-level`` is the last-resort fallback (a lit cell means at least one).
+    """
 
     def __init__(self):
         super().__init__()
-        self.days = {}
+        self.cells = {}  # cell id (or date) -> (day, level, count or None)
+        self.tooltip_counts = {}  # cell id -> count parsed from its tooltip
+        self._tooltip_id = None
+        self._tooltip_chunks = []
 
     def handle_starttag(self, tag, attrs):
-        if tag != "td":
-            return
-        attrs = dict(attrs)
-        raw_date = attrs.get("data-date")
+        attributes = dict(attrs)
+        if tag == "td":
+            self._read_cell(attributes)
+        elif tag == "tool-tip":
+            self._tooltip_id = attributes.get("for")
+            self._tooltip_chunks = []
+
+    def handle_data(self, data):
+        if self._tooltip_id:
+            self._tooltip_chunks.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "tool-tip" and self._tooltip_id:
+            count = parse_tooltip_count("".join(self._tooltip_chunks))
+            if count is not None:
+                self.tooltip_counts[self._tooltip_id] = count
+            self._tooltip_id = None
+            self._tooltip_chunks = []
+
+    def _read_cell(self, attributes):
+        raw_date = attributes.get("data-date")
         if not raw_date:
             return
         try:
             day = date.fromisoformat(raw_date)
-            count = int(attrs.get("data-count", "0"))
-            level = int(attrs.get("data-level", "0"))
-        except (TypeError, ValueError):
+        except ValueError:
             return
-        self.days[day] = (max(0, count), max(0, min(level, 4)))
+        level = max(0, min(to_int(attributes.get("data-level")), 4))
+        raw_count = attributes.get("data-count")
+        count = None if raw_count is None else to_int(raw_count)
+        self.cells[attributes.get("id") or raw_date] = (day, level, count)
+
+    def days(self):
+        """Resolve every cell to ``{date: (contributions, level)}``."""
+        result = {}
+        for cell_id, (day, level, count) in self.cells.items():
+            if count is None:
+                count = self.tooltip_counts.get(cell_id)
+            if count is None:
+                count = 1 if level > 0 else 0
+            result[day] = (max(0, count), level)
+        return result
 
 
 def fetch_contributions():
@@ -53,9 +117,12 @@ def fetch_contributions():
         parser = ContributionParser()
         parser.feed(response.read().decode("utf-8", errors="replace"))
 
-    if not parser.days:
+    if not parser.cells:
         raise RuntimeError("No contribution cells found in GitHub response")
-    return parser.days
+    days = parser.days()
+    if not days:
+        raise RuntimeError("No contribution dates found in GitHub response")
+    return days
 
 
 def calendar_grid(contributions):
@@ -153,6 +220,12 @@ def make_svg(grid, dark=False):
 def main():
     contributions = fetch_contributions()
     grid = calendar_grid(contributions)
+    active_days = sum(1 for cell, (count, _) in contributions.items() if count > 0)
+    total = sum(count for count, _ in contributions.values())
+    # The snake starts with one segment and gains one per day with contributions.
+    print(f"{active_days} active days, {total} contributions, snake length {active_days + 1}")
+    if active_days == 0:
+        print("warning: no contribution counts found, the snake cannot grow")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "github-contribution-grid-snake.svg").write_text(
         make_svg(grid), encoding="utf-8"
